@@ -67,18 +67,18 @@ def dependency_artifacts(store,state,task):
 def prepare_checks(store,state,task,decision,p):
     if task.get('mode')!='outline' or decision['action']=='blocked':return
     validate_task(task)
-    readonly=decision['role'] in ('sol_planner','sol_architect') and decision['action']=='delegate'
+    readonly=decision['role'] in ('sol_planner','sol_architect','local_worker') and decision['action']=='delegate'
     if task['features']['stage']=='review':
         _need(bool(task['snapshot_files']),'review needs frozen snapshot files')
         expected=dependency_artifacts(store,state,task)
         frozen={canonical(path):digest for path,digest in task['snapshot_files'].items()}
         _need(set(expected) <= set(frozen),'review snapshots must cover dependency artifacts')
         _need(all(frozen[path]==digest for path,digest in expected.items()),'review snapshot differs from signed artifact version')
-    if decision['action']=='delegate':
+    if decision['action']=='delegate' and decision.get('executor')!='external':
         slots=p.get('host_slots_available')
         _need(type(slots) is int and 0<=slots<=2,'host_slots_available must be a current native slot count (0..2)')
         _need(slots>0,'host agent slots full; queue without dispatch')
-        reserved=sum(a.get('agent_id') is None for a in store._active(state))
+        reserved=sum(a.get('agent_id') is None and a['decision'].get('executor')!='external' for a in store._active(state))
         _need(slots>reserved,'remaining native slots are already reserved by unbound dispatches')
     active=[]
     for a in store._active(state):active.append((a['task_snapshot'],a['read_only']))

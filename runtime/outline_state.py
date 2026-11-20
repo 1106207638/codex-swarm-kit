@@ -195,7 +195,7 @@ def check_receipt(state, work):
             _need(task['delegation']['prohibited'] and receipt['independence_limitation_acknowledged'],
                   'direct review receipt requires explicit prohibition and acknowledged limitation')
     if work['stage']=='execution':
-        allowed={'luna_worker','luna_general','luna_deep','direct_tool'}
+        allowed={'luna_worker','luna_general','luna_deep','direct_tool','local_worker'}
         if direct and task['delegation']['prohibited']:allowed.add('astra_controller')
         _need(decision['role'] in allowed and task['features']['plan_ready'] and task['features']['ambiguity']=='clear',
               'execution receipt cannot be replaced with planning or unresolved decisions')

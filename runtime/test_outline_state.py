@@ -102,7 +102,13 @@ class OutlineStateTests(unittest.TestCase):
         self.assertEqual(self.accept('parse')['next_module'], 'cli')
         self.assertEqual(self.finish_module('cli')['next_module'], None)
         with self.assertRaises(StateError): self.call('outline_complete', evidence={}, verifier_context_id=self.owner)
-        self.call('outline_complete', evidence={'integrated': ['actual integration result']}, verifier_context_id=self.owner)
+        completed = self.call('outline_complete', evidence={'integrated': ['actual integration result']}, verifier_context_id=self.owner)
+        from routing import handle
+        query = dict(**completed['recap_query'], state_dir=str(self.store.root), owner=self.owner, epoch=1)
+        report = handle(query)
+        self.assertEqual(report['confirmed_attempts'], 4)
+        with self.assertRaises(StateError):
+            handle({**query, 'scope': {'legacy_tasks':['parse-review']}})
         self.assertTrue(self.store.status(self.owner, 1)['outline']['completion'])
 
     def test_input_update_reopens_module_and_invalidates_later_acceptance(self):

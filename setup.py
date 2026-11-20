@@ -28,6 +28,16 @@ REQUIRED |= {'runtime/agents/'+name+'.toml' for name in ('sol-planner','sol-arch
 REQUIRED |= {'docs/'+name+'.md' for name in ('RULES','RUNTIME','CONTRACT','OUTLINE')}
 
 
+def required_files(version):
+    if tuple(map(int,version.split('.'))) >= (1,0,3):
+        return required_files('1.0.2') | {'runtime/swarm_recap.py'}
+    if tuple(map(int,version.split('.'))) >= (1,0,2):
+        return REQUIRED | {'runtime/call_log.py','runtime/external_worker.py','runtime/external_contract.py'}
+    if tuple(map(int,version.split('.'))) >= (1,0,1):
+        return REQUIRED | {'runtime/call_log.py'}
+    return REQUIRED
+
+
 class InstallError(Exception): pass
 
 
@@ -155,7 +165,7 @@ def package(root):
         need(isinstance(digest,str) and re.fullmatch('[0-9a-f]{64}',digest),'Invalid file hash')
         data=read(root/str(p));need(data is not None and sha(data)==digest,'Package file changed/missing: '+name)
         payload[name]=data
-    need(REQUIRED<=set(files),'Incomplete package')
+    need(required_files(manifest['version'])<=set(files),'Incomplete package')
     return manifest,raw,payload
 
 

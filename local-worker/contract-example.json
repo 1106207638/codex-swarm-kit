@@ -1,0 +1,24 @@
+{
+  "protocol": "local-worker/v1",
+  "task_id": "handoff-demo-001",
+  "goal": "从一条会议纪要提取行动项和原文依据。",
+  "task": {
+    "kind": "extract",
+    "instruction": "提取最终负责人、交付日以及证明两者的原文。",
+    "items": [
+      {"id": "note-1", "text": "旧方案：设计组周二交付。最终确认：运营组周四交付 CSV。"}
+    ],
+    "fields": {
+      "owner": {"type": "string", "nullable": false},
+      "due": {"type": "string", "nullable": false},
+      "evidence": {"type": "string", "nullable": false}
+    }
+  },
+  "standard": {
+    "criteria": ["以最后确认的安排为准。", "负责人填组名，日期保留原话，依据要逐字引用原文。"],
+    "checks": [
+      {"id": "quote-exists", "item_id": "note-1", "field": "evidence", "op": "source_quote"},
+      {"id": "quote-is-final", "item_id": "note-1", "field": "evidence", "op": "contains", "expected": "运营组周四"}
+    ]
+  }
+}

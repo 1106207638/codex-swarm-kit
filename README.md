@@ -37,6 +37,21 @@
 
 像改一个按钮文案、修一条明确的提示或回答一个问题，直接告诉 Codex 要改什么即可。
 
+### 任务结束后，怎么看蜂群协作复盘？
+
+先看最终答复。写有 **「本次任务使用了蜂群协作」**，表示至少有一次派发拿到了执行者回执。每项工作都可以顺着三件事往下读：谁接了什么任务、交回了什么、总控最后用了哪部分以及原因。只有主线程直接处理的小任务会照常收尾。
+
+例如，假设你让蜂群整理客户反馈，复盘里出现以下两项：
+
+| 谁接了什么工作 | 交回的结果 | 怎样理解总控的决定 |
+| --- | --- | --- |
+| 本地助手给 20 条反馈分类 | 18 条有明确的故障或咨询依据，另外 2 条描述不完整 | **部分采纳**。18 条进入汇总，2 条留给人工确认。下次可在分类标准里补上「信息不足」。 |
+| 独立审查助手核对优先级 | 找到一条「登录失败」被排在低优先级，但原文说所有用户均无法登录 | **采纳审查意见**。总控退回原排序，要求按影响范围重新排。 |
+
+要追查某一项，打开该项附带的日志链接或完整明细。明细里的行号对应**这次任务台账目录下**的 `calls.jsonl`，从第 1 行开始计数。同一次调用的开始和结束共用一个 `call_id`。反复查同一张任务单只算一次执行。看到「已交回」说明助手给了结果，「已验收」说明总控检查过，最终是否用于交付看「采纳／部分采纳／退回／未采用」及理由。「执行情况待核实」表示缺回执，暂时无法判断助手有没有执行。
+
+也可以直接问 Codex：「按这次任务的台账，找出被退回的子任务，列出原始调用行号、退回原因，以及下次该补哪条验收标准。」旧任务缺少的理由会标明。日志字段和查询方法见[蜂群任务复盘](docs/CONTRACT.md#蜂群任务复盘)。
+
 ## 4. 部署教程
 
 1. **准备环境。** 安装并登录 Codex 桌面端，准备 **Python 3.11 或更新版本**。需要安装 Python 时，可从 [Python 官网](https://www.python.org/downloads/)获取。
@@ -48,3 +63,47 @@
 > 请按 Codex Swarm Kit 的自检说明检查安装，列出当前可用的子代理、模型和推理强度。可以在隔离目录做一次只读子代理试跑。
 
 更新时解压新版再运行同一个安装入口。需要查看安装是否完整、恢复中断的安装或回退时，按 [安装与恢复说明](docs/INSTALLATION.md) 操作。协作细节见 [工作规则](docs/RULES.md)、[大纲协作](docs/OUTLINE.md) 和 [运行说明](docs/RUNTIME.md)。
+
+### 在另一台电脑接入本地模型（可选）
+
+在安装了 Codex 的那台电脑上操作。先装上面的蜂群主包，再从同一版本的 Assets 下载 **`codex-local-worker-1.0.4.zip`**，解压到准备长期保留的目录。进入解压后的 `local-worker` 文件夹，确认能看到 `mcp_server.py`。本地助手负责把蜂群的任务送给你已启动的模型服务。[下载 v1.0.4 主包和助手](https://github.com/1106207638/codex-swarm-kit/releases/tag/v1.0.4)
+
+准备好模型服务的 **API 基址**。服务与 Codex 在同一台电脑上时，可以是 `http://127.0.0.1:8080/v1`；模型在另一台电脑时，填**模型那台电脑**的局域网 IPv4 和实际端口，例如 `http://192.168.1.20:8080/v1`。示例地址请替换。服务需提供兼容的 `/v1/chat/completions`；自动识别模型还需要 `/v1/models`。这里填写以 `/v1` 结尾的基址。
+
+下面的首次注册命令使用 Codex CLI。先确认 `codex mcp add --help` 能运行，CLI 和桌面端使用同一个 Codex 配置目录。在 **`local-worker` 文件夹内**打开终端。配置工具会询问 URL 和模型 ID；如果服务只列出一个模型，模型 ID 直接回车即可。
+
+**Windows · PowerShell**
+
+```powershell
+py -3 -m venv .venv
+$workerPython = (Resolve-Path .\.venv\Scripts\python.exe).Path
+& $workerPython -m pip install -r requirements-mcp.txt
+& $workerPython local_agent.py configure
+$backend = Get-Content -Raw -Encoding utf8 .\state\backend.json | ConvertFrom-Json
+$server = (Resolve-Path .\mcp_server.py).Path
+codex mcp add local-worker -- $workerPython $server --endpoint $backend.endpoint --model $backend.model
+```
+
+如 Windows 只有 `python` 命令，可将第一行的 `py -3` 换成 `python`，版本须为 3.11 或更高。
+
+**macOS · 终端**
+
+```sh
+python3 -m venv .venv
+worker_python="$PWD/.venv/bin/python"
+"$worker_python" -m pip install -r requirements-mcp.txt
+"$worker_python" local_agent.py configure
+endpoint=$("$worker_python" -c 'import json; print(json.load(open("state/backend.json"))["endpoint"])')
+model=$("$worker_python" -c 'import json; print(json.load(open("state/backend.json"))["model"])')
+codex mcp add local-worker -- "$worker_python" "$PWD/mcp_server.py" --endpoint "$endpoint" --model "$model"
+```
+
+首次注册后，重启 Codex 桌面端以建立新连接。发一条小任务验证：「请通过外接本地助手把‘点击保存后闪退’分为故障或咨询，核对模型回执并告诉我实际结果。」预期能看到它返回「故障」，并在本次复盘中找到对应的外接任务。如果连不到模型，先在 **Codex 所在的电脑**核对 API 地址与端口；若服务提供多个模型或没有模型列表，填写实际模型 ID。
+
+### 以后怎样更换模型 URL？
+
+- **Windows**：双击同一个助手文件夹里的 `Change-Model-URL.cmd`，输入新地址。
+- **macOS**：在同一个助手文件夹运行 `./.venv/bin/python local_agent.py configure`，按提示输入新地址。
+- **已知道模型 ID**：两端都可以给 `configure` 加上 `--endpoint 新地址 --model 模型ID`。设置保存在助手目录的 `state/backend.json`。如果注册时自定义了队列目录，换址也使用它，例如 `local_agent.py --state "队列目录" configure`。
+
+保存后，下一次新派发会读取新地址，无需再次注册或重启。已经提交或排队的任务继续使用原地址，可按原编号查结果；已准备但尚未提交的任务遇到换址会退回总控重新核对。切换期间让旧服务运行到旧任务结束。[外接助手与失败恢复](docs/EXTERNAL-WORKER.md)

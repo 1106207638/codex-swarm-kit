@@ -24,6 +24,9 @@ class InstallerTests(unittest.TestCase):
         self.manifest()
 
     def manifest(self,version='1.0.0'):
+        for name in kit.required_files(version) - set(self.files):
+            (self.source/name).write_text('fixture '+name,encoding='utf-8')
+            self.files.append(name)
         self.m={'format':kit.FORMAT,'version':version,'files':{n:kit.sha((self.source/n).read_bytes()) for n in self.files}}
         (self.source/'manifest.json').write_bytes(kit.json_bytes(self.m))
 
@@ -225,8 +228,10 @@ class InstallerTests(unittest.TestCase):
 
     def test_real_source_through_public_cli(self):
         project=Path(kit.__file__).parent
+        version=(project/'VERSION').read_text(encoding='utf-8').strip()
+        self.files=sorted(kit.required_files(version))
         for name in self.files:shutil.copyfile(project/name,self.source/name)
-        shutil.copyfile(project/'setup.py',self.source/'setup.py');self.manifest()
+        shutil.copyfile(project/'setup.py',self.source/'setup.py');self.manifest(version)
         def cli(action,*args):
             p=subprocess.run([sys.executable,'-B','-X','utf8',str(self.source/'setup.py'),action,'--codex-home',str(self.home),*args],capture_output=True,text=True,encoding='utf-8')
             self.assertEqual(p.returncode,0,p.stdout+p.stderr);return json.loads(p.stdout)['result']
@@ -236,6 +241,14 @@ class InstallerTests(unittest.TestCase):
         p=subprocess.run([sys.executable,'-B','-X','utf8',str(installed)],input='{"op":"template"}',capture_output=True,text=True,encoding='utf-8')
         self.assertEqual(p.returncode,0,p.stdout+p.stderr);self.assertTrue(json.loads(p.stdout)['ok'])
         cli('restore','--transaction',receipt['transaction'],'--yes');self.assertFalse(cli('doctor')['installed'])
+
+    def test_logging_release_cannot_omit_runtime_dependency(self):
+        self.manifest('1.0.1')
+        del self.m['files']['runtime/call_log.py']
+        (self.source/'manifest.json').write_bytes(kit.json_bytes(self.m))
+        with self.assertRaisesRegex(kit.InstallError,'Incomplete package'):
+            self.install()
+        self.assertFalse(self.home.exists())
 
     def test_save_during_temp_preparation_is_preserved_for_install_and_restore(self):
         self.home.mkdir();target=self.home/'AGENTS.md';target.write_bytes(b'original rules')

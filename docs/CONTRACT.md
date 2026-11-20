@@ -20,6 +20,7 @@
 | route | task,catalog；只选路，不准备派发 |
 | init | owner；只创建新台账，已有状态绝不重置 |
 | status | 返回已有状态与事件；owner/epoch须匹配。其他聊天可只读查看文件 |
+| call_log | 查询本台账调用日志；可传 task_id、attempt_id、call_id、after_line、limit |
 | add / update | 完整 task；update 保存版本并使下游旧验收失效，活动写入期间拒绝更新 |
 | prepare | task_id,catalog,catalog_provenance,profiles_dir；重新选路并先保存派发意图，返回 spawn_args 或 direct/blocked |
 | bind | attempt_id,agent_id；关联宿主回执，同一回执幂等 |
@@ -31,10 +32,31 @@
 | reconcile_direct | task_id,direct_id,action=no_action或stopped,evidence；释放有证据的直接操作占用 |
 | retry | attempt_id 或直接任务 task_id+direct_id，controller_reason或root_cause_and_fix,human_authorized；绑定最新尝试；可附精确 requested_model/requested_effort |
 | handoff | new_owner,evidence；全部旧操作已明确结束后移交，epoch加一 |
+| external_bind | attempt_id,input_digest,receipt；绑定外接 MCP 的真实提交回执 |
+| external_poll | attempt_id,input_digest,receipt；登记查询进度或候选结果，终态附 summary/evidence；大纲任务附 handoff |
+| external_resume | attempt_id,input_digest；取回同一冻结请求或已绑定的查询参数 |
 
 完整示例以 `test_routing_cli.py`（每步独立 CLI 进程）和 `test_task_state.py` 为准。`prepare` 必须保存成功结果后，主线程才调用 **宿主** `collaboration.spawn_agent(**spawn_args)`，再用真实返回的 agent_id/path 调 bind；普通 Python 无法调用这些聊天工具。请求失败时读取错误原因，不重复发送未知状态的 spawn。
 
 `catalog` 结构为 `{ "source":"runtime-tool", "models":[{"id":"具体型号","reasoning_efforts":["支持档位"]}] }`；另传 `catalog_provenance={"source":"runtime-tool","captured_at":"当次采集时刻","entrypoint":"collaboration.spawn_agent"}`。主线程每次新派发核对当次工具列表，不复用历史快照冒充实时来源。这些字段是调用方声明，程序不能认证真实性。
+
+## 查询某次调用
+
+外接本地智能体遵守同一台账的依赖和验收要求，派发与恢复详见 [外接使用说明](EXTERNAL-WORKER.md)。
+
+从 1.0.1 起，经 CLI 向已有台账登记任务、派发、接收回执、提交结果、验收或变更协作状态时，台账目录的 `calls.jsonl` 会追加开始与结束记录。`route` 和 `main_recommend` 在传入有效 `state_dir,owner,epoch` 时才记录。独立预览、读取任务包、查询台账和查日志本身跳过记录。
+
+```json
+{"op":"call_log","state_dir":"替换为台账绝对路径","owner":"替换为当前协调者","epoch":1,"task_id":"任务编号","limit":100}
+```
+
+可单独按 `attempt_id` 查某次派发，或用 CLI 回执的 `call_log.id` 作为 `call_id` 查某一次命令。结果按追加顺序返回 `records`，每页最多 500 条。下一页把 `next_after_line` 填到 `after_line`，保持相同筛选条件。`skipped_lines` 是本次扫描遇到的中断残行或无效记录。
+
+日志记录 UTC 时间、命令耗时、分派理由、请求的模型和强度、已提交的状态与失败类别。代理结果若带宿主型号证据，日志以 `reported_model` 和 `reported_effort` 记载调用方提交的字段。命令耗时是调度器处理时间。任务和尝试编号以摘要关联，任务正文、模型原始输出、文件路径、凭证和原始错误文字留在各自原有入口。日志局部诊断信息由本机台账目录的访问权限保护。
+
+- `prepare` 的 `dispatch_pending` 表示已保存派发意图，`bind` 才表示已登记宿主回执。`report` 后仍需 `verify`。查询失败类别时，结合原 CLI 错误返回和宿主轨迹。
+- 只有开始记录时，先用 `status` 和宿主回执对账，确认是否提交、是否已派发。`start_write_failed` 表示此次 CLI 未执行状态操作。`finish_write_failed` 表示操作已有返回结果，优先按原回执与台账核对。
+- 日志由使用新版 CLI 的当前台账产生；旧状态兼容，过往调用无需迁移。原生工具直调、代理内部命令与绕开此入口的动作，需从对应宿主记录查询。日志追加保存在本地，随台账单独管理。
 
 ## 失败分类、任务文件与审核工具（3.5.0）
 
@@ -116,6 +138,26 @@ node --test test_main_switch_host.js
 ```
 
 在源码目录执行。真实入口验收另需原生派发回执、结果验证；单元测试与配置不能证明后台实际模型。版本号、固定分工和动态分工的同输入对照只是有限样本，不能证明通用质量或节省比例。
+
+## 蜂群任务复盘
+
+普通委派时，总控为本次用户目标生成一个新的不含业务信息的编号，给各工作项填写同一个 `task.recap_scope`，重试和续接沿用。登记大纲已经确定了范围。用 `task.recap_assignment` 写一句可展示的分工，提前终止时也能交代这项工作原本要做什么。所有操作复用同一台账、owner 和 epoch。
+
+总控核对实际结果后，用以下操作留下可展示的分工、结果与用途。三个摘要仅填写经总控核实、适合给协作使用者看的内容。任务正文、原始回执、文件路径和凭证留在原有访问范围。用 `partial` 写明取了哪部分，`returned` 写清退回原因，`unused` 写清弃用原因。采用要求此前已完成当前版本的独立验收。一次尝试的决定可原样重放；新一轮返工按新的尝试分别说明。
+
+```json
+{"op":"recap_note","attempt_id":"<本次尝试>","input_digest":"<冻结输入摘要>","choice":"adopted","assignment":"核对三条记录的执行状态","output":"三条记录均已分类","reason":"逐条与原始回执一致，用作验收样例"}
+```
+
+在正常结束和提前终止时，将收尾回执的 `recap_query` 加上原台账参数提交。也可直接查询。
+
+```json
+{"op":"swarm_recap","scope":{"group":"<本次目标编号>"}}
+```
+
+大纲使用 `{"outline":"<登记的 ref>"}`。旧普通任务使用 `{"legacy_tasks":["<原工作项 ID>"]}` 显式列全，先从原计划核范围。旧账没有留下的处置理由标明缺失。查询不补写历史。返回 `text` 是可读底稿，`attempts` 包含执行者、状态、依赖工作项摘要、当前版本有效性、结果用途及证据。每条 `calls` 的 start/finish 是同台账 calls.jsonl 从 1 开始的行号，id 可以交给 call_log 查询。另列当前范围内可归属的调度拒绝。缺少回执、处置说明或日志时照实报告；长任务将完整明细另存为 UTF-8 文本，最终答复逐项概括，附本地日志链接。桌面端由主线程在最终回复中呈现。
+
+新任务正常收尾时逐项处理 `needs_decision`，补记已终止尝试的真实用途并重新查询。提前终止或旧任务无法补证时，在答复中说明缺口。只将有执行回执的尝试计入使用次数，同号查询与幂等重放只增加日志行。诊断日志保留可识别的原生型号，外接型号仅返回摘要。
 
 
 

@@ -173,6 +173,9 @@ class Store:
         for index, event in enumerate(state["events"], start=1):
             _need(isinstance(event, dict) and event.get("seq") == index and isinstance(event.get("type"), str), "invalid event sequence")
         validate_switches(state)
+        from external_worker import validate_attempt
+        for attempt in state["attempts"].values():
+            validate_attempt(attempt)
         from outline_state import validate_state
         validate_state(state)
 
@@ -224,13 +227,24 @@ class Store:
             self._check_owner(state, owner, epoch)
             return copy.deepcopy(state)
 
-    def apply(self, op, owner, epoch, **payload):
+    def apply(self, op, owner, epoch, *, journal_call_id=None, **payload):
         op = _nonempty(op, "op")
         with _file_lock(self.lock_path):
             state = self._read()
             self._check_owner(state, owner, epoch)
             candidate = copy.deepcopy(state)
             result = self._transition(candidate, op, owner, payload)
+            if op == "outline_complete":
+                result["recap_query"] = {"op": "swarm_recap", "scope": {"outline": candidate["outline"]["spec"]["ref"]}}
+            elif op in {"verify", "fail", "external_poll", "complete_direct", "reconcile", "recap_note"}:
+                attempt = candidate["attempts"].get(payload.get("attempt_id"), {})
+                tid = attempt.get("task_id") or payload.get("task_id")
+                if tid in candidate["tasks"]:
+                    task = candidate["tasks"][tid]["versions"][-1]["task"]
+                    if task.get("recap_scope"):
+                        result["recap_query"] = {"op": "swarm_recap", "scope": {"group": task["recap_scope"]}}
+            if op == "prepare" and journal_call_id is not None and result.get("attempt_id"):
+                candidate["attempts"][result["attempt_id"]]["prepare_call_id"] = journal_call_id
             self._write(candidate)
             return result
 
@@ -244,6 +258,14 @@ class Store:
         if op.startswith("main_switch_"):
             return transition(self, state, op, owner, p)
         guard(state, op, p)
+        if op == "recap_note":
+            from swarm_recap import record_note
+            return record_note(self, state, owner, p)
+        from external_worker import OPS, transition as external_transition
+        if op in OPS:
+            return external_transition(self, state, op, owner, p)
+        if op in ("bind", "report") and state["attempts"].get(p.get("attempt_id"), {}).get("decision", {}).get("executor") == "external":
+            raise StateError("external attempt requires external_bind or external_poll")
         if op == "add":
             from router_policy import PolicyError, _validate_task
             task = p.get("task")
@@ -280,6 +302,8 @@ class Store:
             task_id = _nonempty(task.get("task_id"), "task_id")
             record = state["tasks"].get(task_id)
             _need(record is not None, "unknown task")
+            _need(task.get("recap_scope") == record["versions"][0]["task"].get("recap_scope"),
+                  "recap scope cannot change across versions")
             _need(not self._active_for_task(state, task_id) and record.get("direct_pending") is None,
                   "cannot update task input while an attempt/direct action may still be active")
             deps = task.get("depends_on", [])
@@ -529,13 +553,23 @@ class Store:
             _need(auth["requested_model"] == requested[0] and auth.get("requested_effort") == requested[1],
                   "retry decision differs from explicitly authorized model/effort")
         attempt_id = str(uuid.uuid4())
+        external = decision.get("executor") == "external"
         try:
-            packet = build_packet(task, decision, p.get("profiles_dir", ""), attempt_id)
+            if external:
+                from external_worker import build_packet as external_packet
+                packet = external_packet(task, decision, attempt_id, p.get("external_capabilities"))
+            else:
+                packet = build_packet(task, decision, p.get("profiles_dir", ""), attempt_id)
         except (PolicyError, ValueError, OSError) as exc:
             raise StateError(f"could not build delegation packet: {exc}") from exc
         read_only = packet["read_only"]
         current_active = self._active(state)
-        _need(len(current_active) < MAX_ACTIVE, f"active subagent limit reached ({MAX_ACTIVE})")
+        if external:
+            _need(not any(a["decision"].get("executor") == "external" for a in current_active),
+                  "external queue already has an active or unknown request in this ledger")
+        else:
+            native_active = [a for a in current_active if a["decision"].get("executor") != "external"]
+            _need(len(native_active) < MAX_ACTIVE, f"active subagent limit reached ({MAX_ACTIVE})")
         if not read_only:
             for other in current_active:
                 if not other["read_only"] and self._overlap(owned_paths, other["owned_paths"]):
@@ -546,8 +580,9 @@ class Store:
                     raise StateError(f"write ownership overlaps active direct action {pending_direct['direct_id']}")
         _need(all(other.get("agent_id") is None or other.get("agent_id") != "" for other in current_active), "active attempt identity is corrupt")
         task_snapshot_hash = input_digest(task)
-        from packet_transport import materialize
-        packet = materialize(packet,task,attempt_id,self.root,Path(__file__).with_name('routing.py'),task_snapshot_hash)
+        if not external:
+            from packet_transport import materialize
+            packet = materialize(packet,task,attempt_id,self.root,Path(__file__).with_name('routing.py'),task_snapshot_hash)
         attempt = {"attempt_id": attempt_id, "task_id": task_id, "task_version": version["version"],
                    "attempt_number": len(all_previous) + 1,
                    "validation_generation": record["validation_generation"],
@@ -580,6 +615,9 @@ class Store:
         self._event(state, "dispatch_prepared", owner, {"task_id": task_id, "attempt_id": attempt_id,
                                                           "input_digest": task_snapshot_hash,
                                                           "requested_model": decision["model"], "effort": decision["effort"]})
+        if external:
+            from external_worker import dispatch
+            return dispatch(attempt)
         return {"decision": decision, "attempt_id": attempt_id, "input_digest": task_snapshot_hash,
                 "check_contract": attempt['check_contract'],
                 "spawn_args": packet["spawn_args"], "status": "dispatch_pending",
@@ -813,6 +851,11 @@ class Store:
         attempt = self._attempt(state, p)
         _need(p.get("attempt_id") == attempt["attempt_id"], "attempt receipt mismatch")
         _need(p.get("input_digest") == attempt["input_digest"], "verification input_digest does not match prepared input")
+        if attempt["decision"].get("executor") == "external":
+            from external_worker import validate_job
+            receipt = attempt.get("external_receipt")
+            validate_job(attempt, receipt)
+            _need(receipt["status"] == "succeeded", "external result is not successful")
         verifier = _nonempty(p.get("verifier_context_id"), "verifier_context_id")
         evidence = _evidence(p.get("evidence"), "verification evidence")
         task_record, current_version = self._task_version(state, attempt["task_id"])

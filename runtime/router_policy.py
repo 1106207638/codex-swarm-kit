@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import tomllib
+import unicodedata
 from pathlib import Path
 
 from resolve_family_models import ResolutionError, resolve
@@ -37,6 +38,11 @@ def _strings(value, name, *, nonempty=True):
     _need(all(isinstance(item, str) and item.strip() for item in value), f"{name} must contain only nonempty strings")
 
 
+def public_summary(value):
+    return (isinstance(value, str) and 0 < len(value.strip()) <= 600 and
+            all(not unicodedata.category(ch).startswith("C") and ch not in "\u2028\u2029" for ch in value))
+
+
 def _validate_task(task):
     _need(isinstance(task, dict), "task must be an object")
     _need(task.get('packet_transport','inline') in ('inline','file'), 'packet_transport must be inline or file')
@@ -49,6 +55,12 @@ def _validate_task(task):
     for name in ("task_id", "goal", "input"):
         _need(isinstance(task.get(name), str) and task[name].strip(), f"{name} must be a nonempty string")
     _need(task["task_id"] == task["task_id"].strip(), "task_id must not contain leading or trailing whitespace")
+    if "recap_assignment" in task:
+        _need(public_summary(task["recap_assignment"]), "recap_assignment requires a single-line public summary")
+    if "recap_scope" in task:
+        _need(task.get("mode") != "outline", "outline registration already defines the recap scope")
+        _need(isinstance(task["recap_scope"], str) and re.fullmatch(r"[A-Za-z0-9_-]{1,96}", task["recap_scope"]),
+              "recap_scope requires a stable opaque identifier")
     for name in _LIST_FIELDS:
         _strings(task.get(name), name)
     _need(isinstance(task.get("input"), str), "input must be a string")
@@ -99,6 +111,10 @@ def _validate_task(task):
     if 'check_plan' in task:
         from check_protocol import validate_plan
         try: validate_plan(task['check_plan'])
+        except StateError as exc: raise PolicyError(str(exc)) from exc
+    if 'external_worker' in task:
+        from external_worker import validate_selection
+        try: validate_selection(task)
         except StateError as exc: raise PolicyError(str(exc)) from exc
     return features
 
@@ -191,6 +207,12 @@ def decide(task: dict, catalog: dict) -> dict:
     outline = outline_collaboration(task)
     if outline and task["operation"] == "business" and (stage == "strategy" or features["ambiguity"] == "conflict" or (stage == "execution" and features["risk"] == "high")):
         return _blocked("blocked_controller_decision", "Return strategy/conflict/high-risk execution to the controller; delegated high-risk execution is not supported in this increment")
+    if task.get("external_worker") is not None:
+        from external_worker import select
+        route = select(task)
+        if isinstance(route, str):
+            return _blocked(route, "External work requires controller authorization, bounded text scope and compatible model restrictions")
+        return route
     if (outline and task["operation"] == "controller") or stage == "strategy" or features["ambiguity"] == "conflict" or (stage == "execution" and features["risk"] == "high"):
         # Keep the historical role identifier for ledger compatibility. The
         # actual controller is the user's current main-thread model.

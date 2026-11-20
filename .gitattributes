@@ -1,0 +1,4 @@
+# The installer verifies these files against byte-level SHA-256 hashes.
+runtime/** -text
+docs/** -text
+Install-macOS.command text eol=lf

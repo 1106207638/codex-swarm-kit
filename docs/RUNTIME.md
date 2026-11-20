@@ -6,6 +6,8 @@ Python 3.11+，仅标准库。先用绝对解释器运行 `runtime/routing.py --
 
 Windows 的 task bootstrap 使用 PowerShell，POSIX 使用 /bin/sh。路径和解释器逐参数转义，明确 exec_command.shell 和 login=false。不要把 POSIX 命令转交 PowerShell，或相反。
 
+支持日志的台账调用会附带 `call_log` 回执。现场排查用 `op: "call_log"` 查同一台账内的记录，具体筛选字段及中断后的对账方式见 [CONTRACT.md](CONTRACT.md#查询某次调用)。
+
 ## 主线程切换
 
 此能力依赖 Codex 宿主提供 read_thread、send_message_to_thread、本地会话日志；Goal 还依赖原生 create_goal/get_goal 与可验证来源事件。安装不保证目标电脑具备这些接口或任何特定模型。缺少入口时保留当前主线程处理可做工作，显式固定条件不满足则停止受限工作。
