@@ -34,6 +34,14 @@ codex mcp add local-worker -- "$worker_python" "$PWD/mcp_server.py" --endpoint "
 
 首次注册后，重启 Codex 桌面端以建立新连接。发一条小任务验证：「请通过外接本地助手把‘点击保存后闪退’分为故障或咨询，核对模型回执并告诉我实际结果。」预期能看到它返回「故障」，并在本次复盘中找到对应的外接任务。如果连不到模型，先在 **Codex 所在的电脑**核对 API 地址与端口；若服务提供多个模型或没有模型列表，填写实际模型 ID。
 
+如果电脑只有 Codex 桌面端，终端找不到 `codex` 命令，可以照上面步骤装好依赖并运行 `configure`，然后用配置文件完成最后的注册。打开 Codex 用户配置目录中的 `config.toml`（默认是用户主目录下的 `.codex/config.toml`），加入下面这段。如果已有同名服务，更新原段落。把示例路径换成本机的绝对路径，地址和模型 ID 填刚生成的 `state/backend.json` 里的值。macOS 的解释器路径以 `.venv/bin/python` 结尾。
+
+```toml
+[mcp_servers.local-worker]
+command = "C:/Tools/local-worker/.venv/Scripts/python.exe"
+args = ["C:/Tools/local-worker/mcp_server.py", "--endpoint", "http://127.0.0.1:8080/v1", "--model", "your-model-id"]
+```
+
 ### 以后怎样更换模型 URL？
 
 - **Windows**：双击同一个助手文件夹里的 `Change-Model-URL.cmd`，输入新地址。
